@@ -1,0 +1,8 @@
+-- Example synced domain table #2.
+CREATE TABLE comments (
+    id TEXT NOT NULL PRIMARY KEY,
+    post_id TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    _status TEXT NOT NULL DEFAULT 'created',
+    _changed TEXT NOT NULL DEFAULT ''
+);

@@ -1,0 +1,14 @@
+.gradle/
+build/
+**/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.kotlin/
+.env
+altonaut.local.properties
+
+# Local-only detached consumer samples (kept out of the public library repo)
+samples/

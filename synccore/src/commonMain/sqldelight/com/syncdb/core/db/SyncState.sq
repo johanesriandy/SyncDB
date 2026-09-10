@@ -1,0 +1,7 @@
+-- The sync watermark. A single row (key = 'global') holds the last successful
+-- pull timestamp (remote clock) and the schema version it was pulled at.
+CREATE TABLE _sync_state (
+    key TEXT NOT NULL PRIMARY KEY,
+    last_pulled_at INTEGER,
+    last_pulled_schema_version INTEGER
+);
