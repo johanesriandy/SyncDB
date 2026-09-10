@@ -1,158 +1,69 @@
-# SyncDB — WatermelonDB sync algorithm, ported to Kotlin Multiplatform
+# SyncDB
 
-A small, reusable **offline-sync engine** that keeps a local SQLite database in
-sync with any remote speaking WatermelonDB's pull/push protocol. This is a port
-of the WatermelonDB **sync algorithm** (`src/sync/impl`) — not the WatermelonDB
-library and not its ORM. The remote is pluggable; the library defines the
-protocol shape and the client-side algorithm only.
+A small, reusable **offline-sync engine for Kotlin Multiplatform**. It keeps a
+local SQLite database in sync with any remote that speaks
+[WatermelonDB](https://github.com/Nozbe/WatermelonDB)'s pull/push protocol.
 
-- **Targets:** `androidTarget`, `iosArm64`, `iosSimulatorArm64` (+ a `jvm` dev/test target).
-- **All algorithm code lives in `commonMain`.** The only `expect`/`actual` is the SQLite driver factory.
-- **Storage:** SQLDelight. **JSON:** kotlinx.serialization. **Async:** coroutines + Flow.
-- **Transport is an interface** (`SyncTransport`); a Ktor implementation ships in a separate module.
+SyncDB is a faithful port of WatermelonDB's **sync algorithm** (`src/sync/impl`) —
+not the WatermelonDB library and not its ORM. It defines the client-side
+algorithm and the protocol shape only; the remote is entirely pluggable.
 
----
+- **Platforms:** Android, iOS (`iosArm64`, `iosSimulatorArm64`), and a JVM target for fast tests.
+- **All sync logic lives in `commonMain`.** The only `expect`/`actual` is the SQLite driver factory.
+- **Storage:** [SQLDelight](https://cashapp.github.io/sqldelight/) · **JSON:** kotlinx.serialization · **Async:** coroutines + Flow.
+- **Transport is an interface** (`SyncTransport`) — bring your own, or use the optional Ktor implementation.
 
 ## Modules
 
-This repo is the **public library** (`com.syncdb`). It contains no
-backend-specific code — a consumer supplies the remote by implementing
-`SyncTransport` (or configuring the provided `KtorSyncTransport`).
-
-| Module | Source set(s) | What it is |
+| Module | Coordinate | What it is |
 |---|---|---|
-| `synccore` | `commonMain` (+ `androidMain`/`iosMain`/`jvmMain` drivers) | The engine, algorithm, storage, descriptors. No transport dependency. |
-| `synctransport-ktor` | `commonMain` | `SyncTransport` over Ktor + a generic `passwordLogin` helper. Depends on `synccore` only. |
+| `synccore` | `com.syncdb:synccore` | The engine, algorithm, local storage, and table descriptors. No transport dependency. |
+| `synctransport-ktor` | `com.syncdb:synctransport-ktor` | An optional `SyncTransport` over [Ktor](https://ktor.io/) + a generic `passwordLogin` helper. Depends on `synccore`. |
 
-Coordinates: `com.syncdb:synccore` and `com.syncdb:synctransport-ktor` (version `0.1.0`).
+Current version: `0.1.0`.
 
----
+## Requirements
 
-## Prerequisites & setup (Windows)
+- **JDK 17+** to build.
+- **Android SDK** for the Android target (set `sdk.dir` in `local.properties` or the `ANDROID_HOME` env var).
+- **macOS + Xcode** to compile/test the iOS targets (an Apple-toolchain requirement; on other OSes the iOS targets configure but don't build).
+- The **Gradle wrapper is included** — use `./gradlew` (or `gradlew.bat` on Windows). No global Gradle needed.
 
-This repo was scaffolded on a machine with **no JVM toolchain** initially. Current state:
+## Installation
 
-| Component | Needed | Notes |
-|---|---|---|
-| **Android SDK** | ✅ satisfied | Installed by Android Studio at `%LOCALAPPDATA%\Android\Sdk` (platform `android-37`, build-tools `36`). Path is wired in `local.properties`. |
-| **JDK 21 (Temurin)** | ✅ installed | `C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot`. Used to run Gradle (JDK 25/JBR is too new for the current AGP/Kotlin). |
-| **Gradle** | via wrapper | Pinned to **8.9** in `gradle/wrapper/gradle-wrapper.properties`. Generate the wrapper once (below). |
+SyncDB is not yet published to a public repository. To use it today, build it
+from source and publish to your local Maven repository:
 
-> **iOS note:** the iOS targets are declared and their code is written, but
-> Kotlin/Native iOS binaries can only be **compiled and tested on macOS with
-> Xcode**. On Windows, verify the algorithm through the **JVM** test target
-> (`jvmTest`) — the tests live in `commonTest` and run identically on every target.
-
-### First-time build
-
-From the project root, in your own terminal (PowerShell), with `JAVA_HOME` set to JDK 21:
-
-```powershell
-$env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-21.0.12.101-hotspot"
-# One-time: generate the Gradle wrapper (gradlew.bat + gradle-wrapper.jar)
-gradle wrapper --gradle-version 8.9
-# Run the algorithm test suite on the JVM (fast, no emulator):
-.\gradlew.bat :synccore:jvmTest :synctransport-ktor:jvmTest
+```bash
+git clone https://github.com/johanesriandy/SyncDB.git
+cd SyncDB
+./gradlew publishToMavenLocal        # publishes com.syncdb:*:0.1.0 to ~/.m2
 ```
 
-If you don't have a `gradle` on PATH, open the project in **Android Studio**
-instead and let it sync — it provides Gradle and generates the wrapper for you.
-Then run the `jvmTest` tasks from the Gradle tool window.
-
-> **Known environment gotcha:** on some locked-down Windows setups, a security/
-> firewall agent blocks the JVM's NIO selector loopback, and Gradle fails to
-> start with `Unable to establish loopback connection`. This is not a project
-> issue — it reproduces with a bare `Selector.open()`. If you hit it, run the
-> build from Android Studio, from a normal user terminal, or in CI (a clean
-> Linux runner is unaffected).
-
----
-
-## The sync lifecycle
-
-`SyncEngine.synchronize()` (port of WatermelonDB `synchronize`):
-
-1. **Read watermark** — `lastPulledAt` from `_sync_state` (null on first sync).
-2. **Resolve schema version** (+ migration info if migrations are enabled).
-3. **Pull** — `transport.pullChanges(lastPulledAt, schemaVersion, migration)`.
-   `timestamp` must be a positive, non-zero number (it becomes the next
-   watermark — **never** a device clock).
-4. **In ONE write transaction:**
-   1. **Concurrency guard** — assert `_sync_state.last_pulled_at` is still the
-      value read in step 1; abort the whole sync otherwise (no overlapping syncs).
-   2. `applyRemoteChanges(pull.changes)`.
-   3. Persist `last_pulled_at = pull.timestamp` (and the schema version when migrations are enabled).
-5. **Fetch local changes** — `fetchLocalChanges()`.
-6. **If non-empty:** `pushChanges(local, pull.timestamp)`, then
-   `markLocalChangesAsSynced(local, push.rejectedIds)`.
-
-Observe progress via `observeSyncState(): Flow<SyncState>`, and check for pending
-work with `hasUnsyncedChanges(): Boolean`.
-
----
-
-## Local bookkeeping model
-
-Every synced table has, besides its `id` (text PK) and domain columns:
-
-- **`_status`** — `synced` | `created` | `updated`.
-  A brand-new local row is `created`; an edited previously-synced row is `updated`.
-- **`_changed`** — comma-separated names of columns edited locally since the last sync.
-
-Plus two engine tables:
-
-- **`_sync_deleted(table_name, id)`** — tombstones. Deleting a synced row removes
-  it from its table and records its id here until the deletion has been pushed.
-- **`_sync_state(key, last_pulled_at, last_pulled_schema_version)`** — the watermark.
-
-Rows sent to the remote are **stripped of `_status`/`_changed`** first.
-
-### Write through the helpers, not raw SQL
-
-So bookkeeping stays correct, the app mutates rows via `SqlLocalDatabase`:
+Then depend on it from your app (a Kotlin Multiplatform or Android/JVM project):
 
 ```kotlin
-db.create("posts", mapOf("id" to "p1", "title" to "Hello"))     // _status = created
-db.update("posts", "p1", mapOf("title" to "Edited"))            // _status = updated, _changed += title
-db.delete("posts", "p1")                                        // -> tombstone (or vanish if never synced)
+repositories {
+    mavenLocal()
+    mavenCentral()
+    google()
+}
+
+dependencies {
+    implementation("com.syncdb:synccore:0.1.0")
+    implementation("com.syncdb:synctransport-ktor:0.1.0") // optional Ktor transport
+}
 ```
 
----
+Alternatively, consume it directly from source with a
+[composite build](https://docs.gradle.org/current/userguide/composite_builds.html):
+add `includeBuild("path/to/SyncDB")` to your `settings.gradle.kts` and depend on
+the same coordinates.
 
-## The conflict rule (per-column)
-
-Default resolution (`resolveConflict`): **the server wins for every column
-EXCEPT the columns the user changed locally** (those in `_changed`), which are
-preserved. If the local row is (transiently) marked deleted, the deletion wins
-and is pushed later.
-
-```
-resolved = remote merged over local
-resolved.id       = local.id
-resolved._status  = local._status
-resolved._changed = local._changed
-for column in local._changed: resolved[column] = local[column]
-```
-
-Override it per-app with a **pluggable resolver**:
+## Quick start
 
 ```kotlin
-val options = SyncOptions(
-    conflictResolver = ConflictResolver { table, local, remote, resolved ->
-        // return the row to write; return `resolved` to keep default behavior
-        resolved
-    }
-)
-```
-
----
-
-## Registering a syncable table
-
-Tables are **declared**, not hand-coded. Describe columns and the engine derives
-all SQL:
-
-```kotlin
+// 1. Describe the tables you sync (id, _status, _changed are implicit).
 val posts = SyncableTable(
     name = "posts",
     columns = listOf(
@@ -161,38 +72,110 @@ val posts = SyncableTable(
         SyncableColumn("is_pinned", ColumnType.BOOLEAN),
     ),
 )
-val schema = SyncSchema(listOf(posts, /* … */))
+val schema = SyncSchema(listOf(posts))
+
+// 2. Create the local database. DriverFactory is the one expect/actual:
+//    Android: DriverFactory(context) · iOS/JVM: DriverFactory()
+val driver = DriverFactory(/* context on Android */).createDriver()
+val db = SyncCore.openDatabase(driver, schema)
+
+// 3. Provide a transport. Implement SyncTransport yourself, or use the Ktor one:
+val transport = KtorSyncTransport(
+    client = httpClient,
+    schema = schema,
+    pullPath = "https://api.example.com/sync/pull",
+    pushPath = "https://api.example.com/sync/push",
+)
+
+// 4. Build the engine and sync.
+val engine = SyncCore.createEngine(db, transport, SyncOptions(schemaVersion = 1))
+val result: SyncResult = engine.synchronize()
 ```
 
-`id`, `_status`, and `_changed` are implicit — don't list them. Add the matching
-`CREATE TABLE` to a SQLDelight `.sq` file (see
-`synccore/src/commonMain/sqldelight/com/syncdb/core/db/`). The shipped
-`ExampleSchema` (`posts`, `comments`) demonstrates the end-to-end pattern.
-
----
-
-## Wiring it together
+Your app mutates rows through helpers so sync bookkeeping stays correct:
 
 ```kotlin
-// 1. Platform driver (the only expect/actual)
-val driver = DriverFactory(/* Android: context */).createDriver()
-
-// 2. Open the local DB with your schema
-val db = SyncCore.openDatabase(driver, ExampleSchema.schema)
-
-// 3. A transport (Ktor impl, or your own SyncTransport)
-val transport = KtorSyncTransport(httpClient, ExampleSchema.schema)
-
-// 4. Engine
-val engine = SyncCore.createEngine(db, transport, SyncOptions(schemaVersion = 1))
-
-// 5. Sync
-val result = engine.synchronize()
+db.create("posts", mapOf("id" to "p1", "title" to "Hello"))  // _status = created
+db.update("posts", "p1", mapOf("title" to "Edited"))         // _status = updated, tracks _changed
+db.delete("posts", "p1")                                     // tombstoned (or removed if never synced)
 ```
 
----
+Observe progress with `engine.observeSyncState(): Flow<SyncState>` and check for
+pending work with `engine.hasUnsyncedChanges(): Boolean`.
 
-## Options (matching WatermelonDB flags)
+## The protocol
+
+Your `SyncTransport` connects the engine to any WatermelonDB-style backend:
+
+```kotlin
+interface SyncTransport {
+    suspend fun pullChanges(lastPulledAt: Long?, schemaVersion: Int, migration: Migration?): PullResult
+    suspend fun pushChanges(changes: DatabaseChangeSet, lastPulledAt: Long): PushResult
+}
+```
+
+- `pullChanges` returns `{ changes, timestamp }`. `lastPulledAt == null` on the
+  first sync (the remote returns a full snapshot). `timestamp` is the remote
+  clock and becomes the next `lastPulledAt` — **never** a device clock.
+- `pushChanges` sends local `created`/`updated` (full rows) and `deleted` (ids
+  only). Rows are stripped of the internal `_status`/`_changed` columns first.
+- `PushResult.rejectedIds` (optional) leaves rejected rows dirty to retry.
+
+`KtorSyncTransport` is fully parameterized — endpoints, query-parameter names,
+extra fixed params, and the auth header — so it adapts to most backends without
+touching the library. For anything unusual, implement `SyncTransport` directly.
+
+## The sync lifecycle
+
+`SyncEngine.synchronize()`:
+
+1. **Read the watermark** — `lastPulledAt` from `_sync_state` (null on first sync).
+2. **Resolve the schema version** (+ migration info if migrations are enabled).
+3. **Pull** — `pullChanges(lastPulledAt, schemaVersion, migration)`. `timestamp` must be positive and non-zero.
+4. **In one write transaction:** guard that the watermark is unchanged (no
+   overlapping syncs), `applyRemoteChanges(...)`, then persist the new watermark.
+5. **Collect local changes** — `fetchLocalChanges()`.
+6. **If any:** `pushChanges(...)`, then `markLocalChangesAsSynced(...)`.
+
+## Local bookkeeping model
+
+Every synced table carries, besides its `id` (text PK) and domain columns:
+
+- **`_status`** — `synced` | `created` | `updated`. A brand-new local row is
+  `created`; an edited previously-synced row is `updated`.
+- **`_changed`** — comma-separated names of columns edited locally since the last sync.
+
+Plus two engine tables:
+
+- **`_sync_deleted(table_name, id)`** — tombstones. Deleting a synced row removes
+  it from its table and records its id here until the deletion has been pushed.
+- **`_sync_state(key, last_pulled_at, last_pulled_schema_version)`** — the watermark.
+
+## The conflict rule
+
+Default resolution (`resolveConflict`), per column: **the server wins for every
+column except the ones the user changed locally** (those listed in `_changed`),
+which are preserved. A locally-deleted row keeps its deletion (pushed later).
+
+Override it per app with a pluggable resolver:
+
+```kotlin
+SyncOptions(
+    conflictResolver = ConflictResolver { table, local, remote, resolved ->
+        resolved // return the row to write; `resolved` keeps the default behavior
+    },
+)
+```
+
+## Registering a table
+
+Tables are **declared**, not hand-coded — the engine derives all SQL from the
+descriptor. Add the matching `CREATE TABLE` to a SQLDelight `.sq` file (or use
+`SyncableTable.createTableSql()` to generate it), including the `_status` and
+`_changed` columns. The bundled `ExampleSchema` (`posts`, `comments`) shows the
+end-to-end pattern in `synccore/src/commonMain/sqldelight/`.
+
+## Options
 
 | Option | Effect |
 |---|---|
@@ -201,40 +184,28 @@ val result = engine.synchronize()
 | `conflictResolver` | Override the default per-column conflict rule. |
 | `logger` (`SyncLogger`) | Observe phases, applied counts, and resolved conflicts. |
 
----
+## Building & testing
 
-## Consuming the library
-
-Publish locally and depend on it by coordinate:
 ```bash
-./gradlew publishToMavenLocal
-```
-```kotlin
-// in a consumer build with mavenLocal() (or your published repo)
-implementation("com.syncdb:synccore:0.1.0")
-implementation("com.syncdb:synctransport-ktor:0.1.0")   // optional Ktor transport
+# Run the algorithm test suite on the JVM (fast, no emulator/simulator):
+./gradlew :synccore:jvmTest :synctransport-ktor:jvmTest
+
+# Build everything (Android + JVM; iOS requires macOS + Xcode):
+./gradlew build
 ```
 
-A consumer wires a driver, a schema, and a transport together:
-```kotlin
-val driver = DriverFactory(/* Android: context */).createDriver()
-val db = SyncCore.openDatabase(driver, mySchema)
-val transport = KtorSyncTransport(httpClient, mySchema, /* endpoints, param names, … */)
-val engine = SyncCore.createEngine(db, transport, SyncOptions(schemaVersion = 1))
-val result = engine.synchronize()
-```
-`KtorSyncTransport` is fully parameterized (endpoints, query-param names, extra
-fixed params, auth header), so it adapts to any WatermelonDB-protocol backend
-without changes to the library.
+The `commonTest` suite runs against an in-memory SQLite driver and a fake
+`SyncTransport`, covering per-column conflict resolution, every `applyRemoteChanges`
+edge case, the `requiresUpdate` skip path, "row edited during push is not marked
+synced", `rejectedIds` handling, the remote-timestamp watermark, and the
+concurrency guard. Because the tests live in `commonTest`, they run identically
+on every target.
 
-## Testing
+## Credits
 
-Pure/independently-testable functions: `resolveConflict`, `applyRemoteChanges`,
-`fetchLocalChanges`, `markLocalChangesAsSynced`. The `commonTest` suite uses an
-**in-memory SQLite driver** and a **fake `SyncTransport`**, covering: per-column
-conflict resolution (incl. deleted short-circuit), `applyRemoteChanges` edge
-cases (created-but-exists, created-but-locally-deleted recreate, updated-but-
-missing insert, updated-but-locally-deleted skip, delete clears tombstone), the
-`requiresUpdate` skip path, "row edited during push is not marked synced",
-`rejectedIds` handling, watermark-from-remote-timestamp, and the concurrency
-guard. Run with `:synccore:jvmTest`.
+The algorithm is ported from [WatermelonDB](https://github.com/Nozbe/WatermelonDB)
+(`src/sync/impl`). SyncDB has no dependency on WatermelonDB itself.
+
+## License
+
+No license has been chosen yet. Add a `LICENSE` file before external use.
