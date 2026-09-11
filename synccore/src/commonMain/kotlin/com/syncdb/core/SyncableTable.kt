@@ -79,9 +79,19 @@ fun SyncableTable.createTableSql(): String {
     return "CREATE TABLE IF NOT EXISTS ${q(name)} (${defs.joinToString(", ")})"
 }
 
-/** A registry of syncable tables, keyed by table name, in registration order. */
-class SyncSchema(val tables: List<SyncableTable>) {
+/**
+ * A registry of syncable tables, keyed by table name, in registration order.
+ *
+ * @property version the schema version (WatermelonDB's `appSchema` version). Bump
+ *   it when tables/columns change and provide matching [SyncMigrations]. It is the
+ *   `schemaVersion` sent to the remote and the version the local migrator targets.
+ */
+class SyncSchema(val tables: List<SyncableTable>, val version: Int = 1) {
     private val byName = tables.associateBy { it.name }
+
+    init {
+        require(version >= 1) { "Schema version must be >= 1 (was $version)" }
+    }
 
     operator fun get(name: String): SyncableTable =
         byName[name] ?: error("Table '$name' is not registered in the sync schema")

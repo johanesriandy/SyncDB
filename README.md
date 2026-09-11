@@ -20,7 +20,7 @@ algorithm and the protocol shape only; the remote is entirely pluggable.
 | `synccore` | `com.syncdb:synccore` | The engine, algorithm, local storage, and table descriptors. No transport dependency. |
 | `synctransport-ktor` | `com.syncdb:synctransport-ktor` | An optional `SyncTransport` over [Ktor](https://ktor.io/) + a generic `passwordLogin` helper. Depends on `synccore`. |
 
-Current version: `0.1.0`.
+Current version: `0.2.0`.
 
 ## Requirements
 
@@ -37,7 +37,7 @@ from source and publish to your local Maven repository:
 ```bash
 git clone https://github.com/johanesriandy/SyncDB.git
 cd SyncDB
-./gradlew publishToMavenLocal        # publishes com.syncdb:*:0.1.0 to ~/.m2
+./gradlew publishToMavenLocal        # publishes com.syncdb:*:0.2.0 to ~/.m2
 ```
 
 Then depend on it from your app (a Kotlin Multiplatform or Android/JVM project):
@@ -50,8 +50,8 @@ repositories {
 }
 
 dependencies {
-    implementation("com.syncdb:synccore:0.1.0")
-    implementation("com.syncdb:synctransport-ktor:0.1.0") // optional Ktor transport
+    implementation("com.syncdb:synccore:0.2.0")
+    implementation("com.syncdb:synctransport-ktor:0.2.0") // optional Ktor transport
 }
 ```
 
@@ -149,7 +149,7 @@ Plus two engine tables:
 
 - **`_sync_deleted(table_name, id)`** — tombstones. Deleting a synced row removes
   it from its table and records its id here until the deletion has been pushed.
-- **`_sync_state(key, last_pulled_at, last_pulled_schema_version)`** — the watermark.
+- **`_sync_state(key, last_pulled_at, last_pulled_schema_version, local_schema_version)`** — the watermark and local schema version.
 
 ## The conflict rule
 
@@ -174,6 +174,44 @@ descriptor. Add the matching `CREATE TABLE` to a SQLDelight `.sq` file (or use
 `SyncableTable.createTableSql()` to generate it), including the `_status` and
 `_changed` columns. The bundled `ExampleSchema` (`posts`, `comments`) shows the
 end-to-end pattern in `synccore/src/commonMain/sqldelight/`.
+
+## Migrations
+
+SyncDB mirrors WatermelonDB's two-layer migration model.
+
+**1. Local schema migration.** Give `SyncSchema` a `version` and provide a
+forward-only, additive migrations registry. On `openDatabase`, the migrator
+brings the local database up to the target version:
+
+```kotlin
+val schema = SyncSchema(listOf(posts, tags), version = 3)
+
+val migrations = syncMigrations {
+    migration(toVersion = 2) {
+        addColumn("posts", "author", ColumnType.TEXT)
+    }
+    migration(toVersion = 3) {
+        createTable(SyncableTable("tags", listOf(SyncableColumn("label", ColumnType.TEXT))))
+    }
+}
+
+val db = SyncCore.openDatabase(driver, schema, migrations)
+```
+
+- **Fresh database** → tables created at the target version.
+- **Upgrade** with a valid path → the registry's `addColumn`/`createTable` steps run.
+- **No path, or a downgrade** → the local database is **reset** and the watermark
+  cleared, so the next sync does a full re-pull. Like WatermelonDB, there is no
+  schema rollback — the local DB is a cache and the remote is the source of truth.
+
+**2. Migration sync (data backfill).** New tables/columns have no local data, and
+an incremental pull wouldn't fetch it (those rows haven't "changed" since the last
+pull). So when the local schema has advanced past the version you last pulled at,
+the engine computes a `Migration { from, tables, columns }` from the registry and
+passes it to `pullChanges`, telling the remote to backfill those tables/columns.
+Enable it with `SyncOptions(migrationsEnabledAtVersion = N)`; if the last-synced
+version predates `N`, the engine falls back to a full re-pull. The schema version
+is tracked with the watermark (`last_pulled_schema_version`).
 
 ## Options
 

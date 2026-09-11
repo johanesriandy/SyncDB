@@ -17,6 +17,8 @@ class SqlLocalDatabase(
     private val driver: SqlDriver,
     private val database: SyncDatabase,
     override val schema: SyncSchema,
+    /** Optional migrations registry driving the local migrator and migration sync. */
+    val migrations: SyncMigrations? = null,
 ) : LocalStore {
 
     private companion object {
@@ -27,7 +29,7 @@ class SqlLocalDatabase(
     fun initialize() {
         driver.execute(
             null,
-            "INSERT OR IGNORE INTO _sync_state(key, last_pulled_at, last_pulled_schema_version) VALUES ('$STATE_KEY', NULL, NULL)",
+            "INSERT OR IGNORE INTO _sync_state(key, last_pulled_at, last_pulled_schema_version, local_schema_version) VALUES ('$STATE_KEY', NULL, NULL, NULL)",
             0,
         )
     }
@@ -69,6 +71,77 @@ class SqlLocalDatabase(
             bindString(2, STATE_KEY)
         }
     }
+
+    /** Reset the pull watermark to "never synced" and clear all tombstones (full re-pull next sync). */
+    fun resetSyncWatermark() {
+        driver.execute(
+            null,
+            "UPDATE _sync_state SET last_pulled_at = NULL, last_pulled_schema_version = NULL WHERE key = ?",
+            1,
+        ) { bindString(0, STATE_KEY) }
+        driver.execute(null, "DELETE FROM _sync_deleted", 0)
+    }
+
+    // ------------------------------------------------------------------
+    // Schema version + DDL (used by the migrator)
+    // ------------------------------------------------------------------
+
+    /** The local database's structure version, or null on a brand-new database. */
+    fun localSchemaVersion(): Int? = driver.executeQuery(
+        null,
+        "SELECT local_schema_version FROM _sync_state WHERE key = ?",
+        { cursor ->
+            QueryResult.Value(if (cursor.next().value) cursor.getLong(0)?.toInt() else null)
+        },
+        1,
+    ) { bindString(0, STATE_KEY) }.value
+
+    fun setLocalSchemaVersion(version: Int) {
+        driver.execute(
+            null,
+            "UPDATE _sync_state SET local_schema_version = ? WHERE key = ?",
+            2,
+        ) {
+            bindLong(0, version.toLong())
+            bindString(1, STATE_KEY)
+        }
+    }
+
+    /** `CREATE TABLE IF NOT EXISTS` from a descriptor (idempotent). */
+    fun createTable(table: SyncableTable) {
+        driver.execute(null, table.createTableSql(), 0)
+    }
+
+    /** `DROP TABLE IF EXISTS`. */
+    fun dropTable(name: String) {
+        driver.execute(null, "DROP TABLE IF EXISTS ${q(name)}", 0)
+    }
+
+    /** Add a column if it is not already present (safe to re-run). */
+    fun addColumnIfMissing(table: String, column: SyncableColumn) {
+        if (column.name in tableColumnNames(table)) return
+        val sqlType = when (column.type) {
+            ColumnType.TEXT -> "TEXT"
+            ColumnType.INTEGER, ColumnType.BOOLEAN -> "INTEGER"
+            ColumnType.REAL -> "REAL"
+        }
+        driver.execute(null, "ALTER TABLE ${q(table)} ADD COLUMN ${q(column.name)} $sqlType", 0)
+    }
+
+    /** The physical column names of a table (via `PRAGMA table_info`). */
+    fun tableColumnNames(table: String): Set<String> = driver.executeQuery(
+        null,
+        "PRAGMA table_info(${q(table)})",
+        { cursor ->
+            val names = LinkedHashSet<String>()
+            // PRAGMA table_info columns: cid(0), name(1), type(2), notnull(3), dflt(4), pk(5)
+            while (cursor.next().value) {
+                cursor.getString(1)?.let { names.add(it) }
+            }
+            QueryResult.Value(names)
+        },
+        0,
+    ).value
 
     // ------------------------------------------------------------------
     // LocalStore

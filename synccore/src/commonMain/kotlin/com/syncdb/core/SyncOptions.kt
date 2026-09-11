@@ -3,7 +3,8 @@ package com.syncdb.core
 /**
  * Tuning flags matching WatermelonDB's sync options.
  *
- * @property schemaVersion the current local schema version, forwarded to the remote.
+ * @property schemaVersion overrides the schema version forwarded to the remote.
+ *   When null (default), the engine uses `SyncSchema.version`.
  * @property sendCreatedAsUpdated when true, locally-created rows are pushed in the
  *   `updated` bucket instead of `created` (for remotes that upsert and don't
  *   distinguish create vs update).
@@ -14,7 +15,7 @@ package com.syncdb.core
  * @property logger observe/log each sync (phases, counts, resolved conflicts).
  */
 data class SyncOptions(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int? = null,
     val sendCreatedAsUpdated: Boolean = false,
     val migrationsEnabledAtVersion: Int? = null,
     val conflictResolver: ConflictResolver? = null,

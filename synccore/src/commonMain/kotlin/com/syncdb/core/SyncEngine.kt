@@ -42,14 +42,34 @@ class SyncEngine(
             val lastPulledAt = db.lastPulledAt()
             val previousSchemaVersion = db.lastPulledSchemaVersion()
 
-            // 2. Resolve schema version + migration info.
-            val schemaVersion = options.schemaVersion
-            val migration = buildMigration(lastPulledAt, previousSchemaVersion)
+            // 2. Resolve the schema version (from the schema, unless overridden).
+            val schemaVersion = options.schemaVersion ?: db.schema.version
+            val enabledAt = options.migrationsEnabledAtVersion
+
+            // Migration sync: when the local schema advanced past the version we
+            // last pulled at, ask the remote to backfill the new tables/columns.
+            var pullCursor = lastPulledAt
+            var migration: Migration? = null
+            if (enabledAt != null && lastPulledAt != null &&
+                previousSchemaVersion != null && previousSchemaVersion < schemaVersion
+            ) {
+                if (previousSchemaVersion < enabledAt) {
+                    // Migration sync wasn't available at that version — full resync.
+                    logger.onWarning(
+                        "last_pulled_schema_version $previousSchemaVersion is below " +
+                            "migrationsEnabledAtVersion $enabledAt; performing a full resync.",
+                    )
+                    pullCursor = null
+                } else {
+                    migration = db.migrations?.migrationInfo(previousSchemaVersion, schemaVersion)
+                        ?: Migration(from = previousSchemaVersion, to = schemaVersion)
+                }
+            }
 
             // 3. Pull.
             emit(SyncState.Running(SyncPhase.PULLING))
             logger.onPhase(SyncPhase.PULLING)
-            val pull = transport.pullChanges(lastPulledAt, schemaVersion, migration)
+            val pull = transport.pullChanges(pullCursor, schemaVersion, migration)
             if (pull.timestamp <= 0L) {
                 throw InvalidPullTimestampException(
                     "pullChanges returned a non-positive timestamp: ${pull.timestamp}"
@@ -71,7 +91,7 @@ class SyncEngine(
                 val counts = applyRemoteChanges(db, pull.changes, options.conflictResolver, logger)
                 // 4c. Persist the new watermark (remote clock).
                 val schemaToPersist =
-                    if (options.migrationsEnabledAtVersion != null) schemaVersion else previousSchemaVersion
+                    if (enabledAt != null) schemaVersion else previousSchemaVersion
                 db.setWatermark(pull.timestamp, schemaToPersist)
                 counts
             }
@@ -131,16 +151,6 @@ class SyncEngine(
                 deleted = c.deleted,
             )
         }
-    }
-
-    private fun buildMigration(lastPulledAt: Long?, previousSchemaVersion: Int?): Migration? {
-        val enabledAt = options.migrationsEnabledAtVersion ?: return null
-        // First sync returns a full snapshot; no migration needed.
-        if (lastPulledAt == null) return null
-        val from = previousSchemaVersion ?: return null
-        if (from >= options.schemaVersion) return null
-        if (options.schemaVersion < enabledAt) return null
-        return Migration(from = from, to = options.schemaVersion)
     }
 
     private fun emit(state: SyncState) {

@@ -8,10 +8,22 @@ import com.syncdb.core.db.SyncDatabase
  * given [SyncSchema] and seeds the sync-state row.
  */
 object SyncCore {
-    fun openDatabase(driver: SqlDriver, schema: SyncSchema): SqlLocalDatabase {
+    /**
+     * Open the local database: seed sync state, then run the local migrator to
+     * bring the database structure to [schema]'s version (creating tables on a
+     * fresh DB, applying [migrations] on an upgrade, or resetting when there is
+     * no migration path). Pass [migrations] to enable schema evolution.
+     */
+    fun openDatabase(
+        driver: SqlDriver,
+        schema: SyncSchema,
+        migrations: SyncMigrations? = null,
+        logger: SyncLogger = SyncLogger.NONE,
+    ): SqlLocalDatabase {
         val database = SyncDatabase(driver)
-        val local = SqlLocalDatabase(driver, database, schema)
+        val local = SqlLocalDatabase(driver, database, schema, migrations)
         local.initialize()
+        SyncMigrator.migrate(local, logger)
         return local
     }
 

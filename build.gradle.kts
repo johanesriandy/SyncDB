@@ -9,5 +9,5 @@ plugins {
 // (com.syncdb:synccore, com.syncdb:synctransport-ktor).
 allprojects {
     group = "com.syncdb"
-    version = "0.1.0"
+    version = "0.2.0"
 }
