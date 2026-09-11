@@ -10,7 +10,8 @@ algorithm and the protocol shape only; the remote is entirely pluggable.
 
 - **Platforms:** Android, iOS (`iosArm64`, `iosSimulatorArm64`), and a JVM target for fast tests.
 - **All sync logic lives in `commonMain`.** The only `expect`/`actual` is the SQLite driver factory.
-- **Storage:** [SQLDelight](https://cashapp.github.io/sqldelight/) · **JSON:** kotlinx.serialization · **Async:** coroutines + Flow.
+- **Schema-first, no SQL files** — tables are declared as descriptors (like WatermelonDB's `appSchema`).
+- **Storage:** SQLite via [SQLDelight](https://cashapp.github.io/sqldelight/) drivers · **JSON:** kotlinx.serialization · **Async:** coroutines + Flow.
 - **Transport is an interface** (`SyncTransport`) — bring your own, or use the optional Ktor implementation.
 
 ## Modules
@@ -64,15 +65,13 @@ the same coordinates.
 
 ```kotlin
 // 1. Describe the tables you sync (id, _status, _changed are implicit).
-val posts = SyncableTable(
-    name = "posts",
-    columns = listOf(
-        SyncableColumn("title", ColumnType.TEXT),
-        SyncableColumn("body", ColumnType.TEXT),
-        SyncableColumn("is_pinned", ColumnType.BOOLEAN),
-    ),
-)
-val schema = SyncSchema(listOf(posts))
+val schema = syncSchema(version = 1) {
+    table("posts") {
+        text("title", nullable = false, default = "''")
+        text("body", nullable = false, default = "''")
+        bool("is_pinned", nullable = false, default = "0")
+    }
+}
 
 // 2. Create the local database. DriverFactory is the one expect/actual:
 //    Android: DriverFactory(context) · iOS/JVM: DriverFactory()
@@ -169,11 +168,30 @@ SyncOptions(
 
 ## Registering a table
 
-Tables are **declared**, not hand-coded — the engine derives all SQL from the
-descriptor. Add the matching `CREATE TABLE` to a SQLDelight `.sq` file (or use
-`SyncableTable.createTableSql()` to generate it), including the `_status` and
-`_changed` columns. The bundled `ExampleSchema` (`posts`, `comments`) shows the
-end-to-end pattern in `synccore/src/commonMain/sqldelight/`.
+Tables are **declared, not hand-coded** — descriptors are the single source of
+truth (like WatermelonDB's `appSchema`), and the engine derives every statement,
+including the `CREATE TABLE`, from them. **There are no SQL files.** Declare your
+schema with the `syncSchema { }` DSL:
+
+```kotlin
+val schema = syncSchema(version = 1) {
+    table("posts") {
+        text("title", nullable = false, default = "''")
+        text("body", nullable = false, default = "''")
+        bool("is_pinned", nullable = false, default = "0")
+    }
+    table("comments") {
+        text("post_id", nullable = false, default = "''")
+        text("body", nullable = false, default = "''")
+    }
+}
+```
+
+`id`, `_status`, and `_changed` are implicit — don't declare them. Each column
+takes optional `nullable` (default true) and `default` (a raw SQL literal). The
+bundled `ExampleSchema` shows this end-to-end. (Internally, only SyncDB's two
+engine tables are created from code via `EngineSchema`; SQLDelight is used only
+for its multiplatform drivers, not code generation.)
 
 ## Migrations
 

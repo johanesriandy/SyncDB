@@ -1,9 +1,0 @@
--- The sync watermark. A single row (key = 'global') holds the last successful
--- pull timestamp (remote clock), the schema version it was pulled at, and the
--- local database's own structure version (what the local migrator has applied).
-CREATE TABLE _sync_state (
-    key TEXT NOT NULL PRIMARY KEY,
-    last_pulled_at INTEGER,
-    last_pulled_schema_version INTEGER,
-    local_schema_version INTEGER
-);

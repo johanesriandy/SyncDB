@@ -8,10 +8,19 @@ enum class ColumnType {
     BOOLEAN, // stored as INTEGER 0/1, surfaced as Kotlin Boolean
 }
 
-/** A single domain column of a synced table. */
+/**
+ * A single domain column of a synced table.
+ *
+ * @property nullable whether the column allows NULL (default true — a remote row
+ *   may omit or null a column).
+ * @property default a raw SQL default expression emitted as `DEFAULT <value>`
+ *   (e.g. `"''"`, `"0"`), or null for no default.
+ */
 data class SyncableColumn(
     val name: String,
     val type: ColumnType,
+    val nullable: Boolean = true,
+    val default: String? = null,
 )
 
 /**
@@ -59,9 +68,9 @@ data class SyncableTable(
 /**
  * `CREATE TABLE` DDL for this descriptor, including the implicit `id` PK and the
  * `_status` / `_changed` bookkeeping columns. Identifiers are quoted so reserved
- * words (e.g. `group`) are safe. Domain columns are nullable so a remote row may
- * omit or null any of them. Useful for registering tables at runtime (e.g. tests
- * or integration harnesses) without hand-writing a SQLDelight `.sq` file.
+ * words (e.g. `group`) are safe. Each domain column honors its [SyncableColumn.nullable]
+ * and [SyncableColumn.default]. This makes descriptors the single source of truth —
+ * no hand-written SQL is needed to create a table.
  */
 fun SyncableTable.createTableSql(): String {
     fun q(id: String) = "\"" + id.replace("\"", "\"\"") + "\""
@@ -72,7 +81,11 @@ fun SyncableTable.createTableSql(): String {
     }
     val defs = buildList {
         add("${q(SyncColumns.ID)} TEXT NOT NULL PRIMARY KEY")
-        columns.forEach { add("${q(it.name)} ${sqlType(it.type)}") }
+        columns.forEach { c ->
+            val nn = if (!c.nullable) " NOT NULL" else ""
+            val def = if (c.default != null) " DEFAULT ${c.default}" else ""
+            add("${q(c.name)} ${sqlType(c.type)}$nn$def")
+        }
         add("${q(SyncColumns.STATUS)} TEXT NOT NULL DEFAULT '${SyncStatus.CREATED}'")
         add("${q(SyncColumns.CHANGED)} TEXT NOT NULL DEFAULT ''")
     }

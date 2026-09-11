@@ -1,7 +1,0 @@
--- Local tombstones. Deleting a synced row removes it from its own table and
--- records (table_name, id) here until the deletion has been pushed to the remote.
-CREATE TABLE _sync_deleted (
-    table_name TEXT NOT NULL,
-    id TEXT NOT NULL,
-    PRIMARY KEY (table_name, id)
-);

@@ -1,10 +1,10 @@
 package com.syncdb.core
 
+import app.cash.sqldelight.TransacterImpl
 import app.cash.sqldelight.db.QueryResult
 import app.cash.sqldelight.db.SqlCursor
 import app.cash.sqldelight.db.SqlDriver
 import app.cash.sqldelight.db.SqlPreparedStatement
-import com.syncdb.core.db.SyncDatabase
 
 /**
  * [LocalStore] backed by a real SQLite database via an [SqlDriver]. Every
@@ -15,7 +15,6 @@ import com.syncdb.core.db.SyncDatabase
  */
 class SqlLocalDatabase(
     private val driver: SqlDriver,
-    private val database: SyncDatabase,
     override val schema: SyncSchema,
     /** Optional migrations registry driving the local migrator and migration sync. */
     val migrations: SyncMigrations? = null,
@@ -25,8 +24,13 @@ class SqlLocalDatabase(
         const val STATE_KEY = "global"
     }
 
-    /** Seed the single `_sync_state` row (idempotent). */
+    // Transaction support without a generated SQLDelight database.
+    private val transacter = object : TransacterImpl(driver) {}
+
+    /** Ensure the engine tables exist and seed the single `_sync_state` row (idempotent). */
     fun initialize() {
+        driver.execute(null, EngineSchema.CREATE_SYNC_STATE, 0)
+        driver.execute(null, EngineSchema.CREATE_SYNC_DELETED, 0)
         driver.execute(
             null,
             "INSERT OR IGNORE INTO _sync_state(key, last_pulled_at, last_pulled_schema_version, local_schema_version) VALUES ('$STATE_KEY', NULL, NULL, NULL)",
@@ -36,7 +40,7 @@ class SqlLocalDatabase(
 
     /** Runs [body] in a single write transaction. */
     fun <R> transaction(body: () -> R): R =
-        database.transactionWithResult { body() }
+        transacter.transactionWithResult { body() }
 
     // ------------------------------------------------------------------
     // Watermark

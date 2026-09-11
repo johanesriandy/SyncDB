@@ -1,7 +1,6 @@
 package com.syncdb.core
 
 import app.cash.sqldelight.db.SqlDriver
-import com.syncdb.core.db.SyncDatabase
 
 /**
  * Assembly entry point. Wraps an [SqlDriver] in a [SqlLocalDatabase] with the
@@ -20,8 +19,7 @@ object SyncCore {
         migrations: SyncMigrations? = null,
         logger: SyncLogger = SyncLogger.NONE,
     ): SqlLocalDatabase {
-        val database = SyncDatabase(driver)
-        val local = SqlLocalDatabase(driver, database, schema, migrations)
+        val local = SqlLocalDatabase(driver, schema, migrations)
         local.initialize()
         SyncMigrator.migrate(local, logger)
         return local
@@ -35,26 +33,20 @@ object SyncCore {
 }
 
 /**
- * Descriptors for the two example domain tables shipped in the SQLDelight schema.
- * A real app registers its own [SyncableTable] list the same way.
+ * Two example domain tables, declared with the [syncSchema] DSL. Descriptors are
+ * the single source of truth — the engine creates these tables from them (there
+ * are no SQL files). A real app declares its own schema the same way.
  */
 object ExampleSchema {
-    val posts = SyncableTable(
-        name = "posts",
-        columns = listOf(
-            SyncableColumn("title", ColumnType.TEXT),
-            SyncableColumn("body", ColumnType.TEXT),
-            SyncableColumn("is_pinned", ColumnType.BOOLEAN),
-        ),
-    )
-
-    val comments = SyncableTable(
-        name = "comments",
-        columns = listOf(
-            SyncableColumn("post_id", ColumnType.TEXT),
-            SyncableColumn("body", ColumnType.TEXT),
-        ),
-    )
-
-    val schema = SyncSchema(listOf(posts, comments))
+    val schema = syncSchema(version = 1) {
+        table("posts") {
+            text("title", nullable = false, default = "''")
+            text("body", nullable = false, default = "''")
+            bool("is_pinned", nullable = false, default = "0")
+        }
+        table("comments") {
+            text("post_id", nullable = false, default = "''")
+            text("body", nullable = false, default = "''")
+        }
+    }
 }
